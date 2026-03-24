@@ -25,6 +25,8 @@ class AnchorPayload(BaseModel):
     signer_public_key_id: str
     binding_vhash: Optional[str] = None
     semantic_content: Optional[SemanticContent] = None
+    image_quality_score: Optional[float] = None
+    image_quality_details: Optional[dict] = None
 
 class AnchorResponse(BaseModel):
     id: str

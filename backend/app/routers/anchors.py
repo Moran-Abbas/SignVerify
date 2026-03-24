@@ -24,6 +24,7 @@ from app.middleware.auth_middleware import get_current_user
 from app.services.crypto_service import crypto_service
 from app.services.s3_service import s3_service
 from app.services.extraction_service import extraction_service
+from app.services.image_quality_service import image_quality_service
 from app.utils.normalizer import normalize_semantic_text
 from app.utils.visual_hash import dhash_hex_from_base64_data_uri_or_raw, hamming_hex64
 import cv2
@@ -151,6 +152,20 @@ async def sign_document(
         raise HTTPException(status_code=400, detail=str(e))
 
     # ── Level 2b: Pixel-accurate visual hash vs signed v_hash (anti-tamper image / wrong crop) ──
+    image_bytes = base64.b64decode(anchor_req.image_base64)
+    
+    # Authoritative Quality Gate (T1 Foundation)
+    quality_result = image_quality_service.validate(image_bytes)
+    if not quality_result.passed:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "error": "IMAGE_QUALITY_BELOW_THRESHOLD",
+                "score": quality_result.score,
+                "details": quality_result.details
+            }
+        )
+
     server_vh = dhash_hex_from_base64_data_uri_or_raw(anchor_req.image_base64)
     if not server_vh:
         raise HTTPException(status_code=400, detail="Invalid image: could not decode for visual binding.")
@@ -158,35 +173,44 @@ async def sign_document(
     try:
         payload_obj = json.loads(anchor_req.payload_json)
     except json.JSONDecodeError:
-        raise HTTPException(status_code=400, detail="payload_json must be valid JSON")
+        raise HTTPException(status_code=401, detail="payload_json must be valid JSON")
 
-    client_vh = str(payload_obj.get("v_hash", "")).strip().lower()
-    if len(client_vh) != 16 or any(c not in "0123456789abcdef" for c in client_vh):
-        raise HTTPException(status_code=400, detail="Signed payload must include a valid 16-char hex v_hash")
+    policy_version = payload_obj.get("policy_version", 1)
+    
+    # ── Policy-Specific Verification ────────────────────────
+    if policy_version == 2:
+        # Policy V2: Deterministic SHA-256 binary hash binding
+        signed_doc_hash = str(payload_obj.get("document_hash", "")).strip().lower()
+        actual_doc_hash = hashlib.sha256(anchor_req.image_base64.encode()).hexdigest()
+        
+        if signed_doc_hash != actual_doc_hash:
+            raise HTTPException(
+                status_code=401,
+                detail="CRYPTOGRAPHIC BINDING ERROR: Signed document_hash does not match image payload."
+            )
+        # Skip Hamming distance check for V2 (authorized by spec)
+    else:
+        # Policy V1: Perceptual Hamming distance check
+        client_vh = str(payload_obj.get("v_hash", "")).strip().lower()
+        if len(client_vh) != 16 or any(c not in "0123456789abcdef" for c in client_vh):
+            raise HTTPException(status_code=401, detail="Signed payload must include a valid 16-char hex v_hash")
 
-    vdist = hamming_hex64(client_vh, server_vh)
-    if vdist > MAX_VISUAL_COMMITMENT_GAP_BITS:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"Visual commitment mismatch (bit distance {vdist}). "
-                "Keep the document centered in the frame, add light, and retry."
-            ),
-        )
+        vdist = hamming_hex64(client_vh, server_vh)
+        if vdist > MAX_VISUAL_COMMITMENT_GAP_BITS:
+            raise HTTPException(
+                status_code=401,
+                detail=(
+                    f"Visual commitment mismatch (bit distance {vdist}). "
+                    "Keep the document centered in the frame, add light, and retry."
+                ),
+            )
 
-    policy_version = payload_obj.get("policy_version")
-    if policy_version is not None:
-        try:
-            pv = int(policy_version)
-        except (TypeError, ValueError):
-            raise HTTPException(status_code=400, detail="policy_version must be an integer")
-        if pv >= 1:
-            th = str(payload_obj.get("text_hash", "")).strip().lower()
-            if len(th) != 64 or any(c not in "0123456789abcdef" for c in th):
-                raise HTTPException(
-                    status_code=400,
-                    detail="policy_version >= 1 requires a 64-char lowercase hex text_hash",
-                )
+        th = str(payload_obj.get("text_hash", "")).strip().lower()
+        if len(th) != 64 or any(c not in "0123456789abcdef" for c in th):
+            raise HTTPException(
+                status_code=401,
+                detail="policy_version >= 1 requires a 64-char lowercase hex text_hash",
+            )
 
     # ── Level 3: Semantic Enrichment ────────────────────────
     # If the client didn't provide semantic content, automate it now
@@ -245,6 +269,8 @@ async def sign_document(
         phash=server_vh,
         reference_id=anchor_req.reference_id,
         orb_descriptors=orb_data,
+        image_quality_score=quality_result.score,
+        image_quality_details=quality_result.details
     )
     
     db.add(new_anchor)
@@ -266,7 +292,9 @@ async def sign_document(
             digital_signature=new_anchor.digital_signature,
             signer_public_key_id=str(new_anchor.signer_public_key_id),
             binding_vhash=new_anchor.binding_vhash,
-            semantic_content=new_anchor.normalized_content
+            semantic_content=new_anchor.normalized_content,
+            image_quality_score=new_anchor.image_quality_score,
+            image_quality_details=new_anchor.image_quality_details
         )
     )
 
@@ -297,7 +325,9 @@ async def list_anchors(
                 digital_signature=a.digital_signature,
                 signer_public_key_id=str(a.signer_public_key_id),
                 binding_vhash=a.binding_vhash,
-                semantic_content=a.normalized_content
+                semantic_content=a.normalized_content,
+                image_quality_score=a.image_quality_score,
+                image_quality_details=a.image_quality_details
             )
         ) for a in anchors
     ]
