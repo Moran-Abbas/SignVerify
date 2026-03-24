@@ -9,6 +9,7 @@ backend/.pycache/
 .env
 backend/.env
 mobile/.env
+backend/.env.save
 backend/firebase-adminsdk.json
 backend/gcp-service-account.json
 mobile/google-services.json
