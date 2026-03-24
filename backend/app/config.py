@@ -58,6 +58,20 @@ class Settings(BaseSettings):
         description="Reject oversized base64 payloads to reduce abuse and OOM risk",
     )
 
+    # ── Image Quality Thresholds ───────────────────────────
+    MIN_LAPLACIAN_VAR: float = Field(
+        default=60.0,
+        description="Threshold for blur detection (higher = stricter)",
+    )
+    MIN_BRIGHTNESS: float = Field(
+        default=40.0,
+        description="Minimum mean brightness (0-255)",
+    )
+    MAX_BRIGHTNESS: float = Field(
+        default=250.0,
+        description="Maximum mean brightness (0-255)",
+    )
+
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
 

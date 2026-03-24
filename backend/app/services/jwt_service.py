@@ -62,3 +62,37 @@ def decode_token(token: str) -> Dict[str, Any]:
         raise ValueError(f"Invalid token: {str(e)}")
     except ValidationError as e:
         raise ValueError(f"Invalid token payload: {str(e)}")
+
+def create_verification_candidate_token(
+    anchor_id: str, nonce: str, expires_delta: timedelta = None
+) -> str:
+    """
+    Create a very short-lived JWT that binds a search result (anchor_id)
+    to a specific request (nonce). Used to gate the final biometric check.
+    """
+    if expires_delta:
+        expire = datetime.utcnow() + expires_delta
+    else:
+        expire = datetime.utcnow() + timedelta(minutes=5)
+        
+    to_encode = {
+        "exp": expire, 
+        "anchor_id": str(anchor_id), 
+        "nonce": nonce, 
+        "type": "verification_candidate"
+    }
+    encoded_jwt = jwt.encode(
+        to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM
+    )
+    return encoded_jwt
+
+
+def decode_verification_candidate_token(token: str) -> Dict[str, Any]:
+    """
+    Decode and validate a verification candidate token.
+    Throws ValueError if not a 'verification_candidate' type.
+    """
+    payload = decode_token(token)
+    if payload.get("type") != "verification_candidate":
+        raise ValueError("Invalid token type: expected 'verification_candidate'")
+    return payload

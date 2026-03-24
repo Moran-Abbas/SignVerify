@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime
-from sqlalchemy import String, DateTime, Text, ForeignKey, JSON
+from sqlalchemy import String, DateTime, Text, ForeignKey, JSON, Float
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
@@ -26,6 +26,10 @@ class DocumentAnchor(Base):
     phash: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)
     reference_id: Mapped[str | None] = mapped_column(String(6), unique=True, index=True, nullable=True)
     orb_descriptors: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    
+    # Quality & Rectification Metrics (Foundation Layer)
+    image_quality_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    image_quality_details: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
