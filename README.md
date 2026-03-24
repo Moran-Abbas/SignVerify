@@ -1,5 +1,8 @@
 # 🛡️ SignVerify
 
+> [!WARNING]
+> **DEVELOPMENT STATUS**: This project is currently in **Active Development (WIP)**. Features are being hardened for production, and the current codebase is intended for demonstration and security testing purposes only.
+
 **Enterprise-Grade Physical Document Digitization & Cryptographic Proof System**
 
 SignVerify is a high-security platform designed to bridge the gap between physical paper and digital trust. It uses hardware-backed mobile cryptography and multimodal AI to ensure that signatures on physical documents are authentic, untampered, and verifiable across the globe.
