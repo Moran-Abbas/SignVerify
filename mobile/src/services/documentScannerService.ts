@@ -13,7 +13,6 @@ export class DocumentScannerService {
       // Launch scanner
       const { scannedImages } = await DocumentScanner.scanDocument({
         maxNumDocuments: 1,
-        letUserAdjustCrop: true,
       });
 
       // If a document was scanned, return the first one

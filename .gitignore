@@ -24,6 +24,7 @@ dist/
 build/
 .DS_Store
 *.pyc
+CLAUDE.md
 
 # Agent-specific
 .agents/

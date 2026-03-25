@@ -33,11 +33,11 @@ from app.utils.visual_hash import dhash_hex_from_base64_data_uri_or_raw
 router = APIRouter(prefix="/signatures", tags=["search"])
 
 # 2026 Verification Thresholds
-VISUAL_HAMMING_THRESHOLD_DISCOVERY = 14
-VISUAL_HAMMING_THRESHOLD_STRICT = 8
-ORB_MIN_MATCHES = 15
-ORB_MIN_INLIERS = 8
-ORB_MIN_RATIO = 0.35
+VISUAL_HAMMING_THRESHOLD_DISCOVERY = 16  # Relaxed for coarse discovery
+VISUAL_HAMMING_THRESHOLD_STRICT = 10     # Strict for forensic resolution
+ORB_MIN_MATCHES = 12                     # Lowered slightly for rectified-to-rectified matching
+ORB_MIN_INLIERS = 10                     # Increased for homography consensus
+ORB_MIN_RATIO = 0.40                    # Increased for precision
 LIVENESS_FREQ_RATIO = 2.8
 LIVENESS_LAPLACIAN_VAR = 40.0
 
@@ -335,20 +335,48 @@ async def verify_document(
     except Exception as e:
         return {"match_found": False, "detail": "INVALID_IMAGE_BASE64"}
 
-    rect_result = await doc_rectification_service.rectify(image_data)
-    if not rect_result.passed:
-         return {"match_found": False, "detail": f"RECTIFICATION_FAILED: {rect_result.details}"}
+    # 2026 Unified Consistency: Detect if client already pre-cropped (1024x1024)
+    nparr = np.frombuffer(image_data, np.uint8)
+    raw_img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
     
-    rect_image_b64 = str(rect_result.rectified_image)
+    use_raw = False
+    if raw_img is not None:
+        h, w = raw_img.shape[:2]
+        if h == w == 1024:
+            print("[Verify] Detected 1024x1024 precision crop - bypassing rectification for 1:1 match.")
+            use_raw = True
+            
+    if use_raw:
+        rect_image_b64 = base64.b64encode(image_data).decode('utf-8')
+        # Stub for rect_result
+        from pydantic import BaseModel
+        class StubRectResult: passed = True; confidence = 1.0; details = {"method": "precision_crop"}
+        rect_result = StubRectResult()
+    else:
+        rect_result = await doc_rectification_service.rectify(image_data)
+        if not rect_result.passed:
+            print(f"[Verify] Rectification failed: {rect_result.details}. Using raw fallback.")
+            rect_image_b64 = base64.b64encode(image_data).decode('utf-8')
+            rect_result.confidence = 0.5
+        else:
+            rect_image_b64 = str(rect_result.rectified_image)
+    
     rect_bytes = base64.b64decode(rect_image_b64)
     
     quality = quality_validator.validate(rect_bytes)
     if not quality.passed:
+        # Flatten flags for mobile display
+        failed_reasons = []
+        f = quality.details.get("flags", {})
+        if f.get("is_blurry"): failed_reasons.append("too blurry")
+        if f.get("is_too_dark"): failed_reasons.append("too dark")
+        if f.get("is_too_bright"): failed_reasons.append("too bright")
+        if f.get("is_low_res"): failed_reasons.append("low resolution")
+        
+        reason_str = ", ".join(failed_reasons) if failed_reasons else "poor image quality"
         return {
             "match_found": False, 
-            "detail": "IMAGE_QUALITY_BELOW_THRESHOLD",
-            "quality_score": quality.score,
-            "quality_details": quality.details
+            "detail": f"IMAGE_QUALITY_REJECTED: The photo is {reason_str}. Please steady your device and ensure good lighting."
         }
 
     if payload.mode == "discovery":
@@ -412,21 +440,65 @@ async def verify_document(
         return {"match_found": False, "detail": "NO_ANCHOR_RESOLVED"}
 
     orb_res = await _verify_orb_homography(rect_image_b64, anchor)
-    
     nparr = np.frombuffer(rect_bytes, np.uint8)
     rect_gray = cv2.imdecode(nparr, cv2.IMREAD_GRAYSCALE)
     liveness = perform_liveness_check(rect_gray)
     crypto = await cryptographic_attestation(db, anchor)
-    semantic_passed = await extraction_service.verify_document_id(rect_image_b64, anchor.reference_id)
     
-    confidence = float(orb_res["confidence"] * 0.4) + float(quality.score * 0.3) + (0.3 if crypto["signature_valid"] else 0.0)
-    if not liveness["is_liveness_passing"]:
-        confidence *= 0.2
-        
-    v_state = "verified"
-    if not semantic_passed:
+    # 2026 Semantic Audit: Compare Signed Truth vs Scanned Truth
+    # This detects "Local Content Forgery" (e.g. $54.50 -> $5.45)
+    signed_semantic = anchor.normalized_content or {}
+    scanned_semantic = await extraction_service.extract_semantic_from_image(rect_image_b64)
+    reconciliation = extraction_service.reconcile_semantic(signed_semantic, scanned_semantic)
+    
+    # Check for specific shortcode match as extra signal
+    id_match = await extraction_service.verify_document_id(rect_image_b64, anchor.reference_id)
+    
+    scanned_certainty = scanned_semantic.get("confidence", 0.0)
+    semantic_passed = (reconciliation["status"] == "passed")
+    forgery_detected = (reconciliation["status"] == "forged")
+    forgery_reason = reconciliation.get("reason", "Unknown integrity violation")
+    
+    # 2026 Trust Elevation: If AI is unsure (< 95%), escalate to human manually
+    is_ambiguous = (scanned_certainty < 0.95)
+    
+    print(f"[Verify] Anchor: {anchor.id} | ORB: {orb_res['confidence']:.2f} | Certainty: {scanned_certainty:.2f}")
+    
+    # 2026 Verification Strategy (Refinement): 
+    # Visual (ORB) and Cryptographic proof are the primary high-confidence drivers.
+    # Semantic (OCR ID) is now a secondary 'bonus' as the ID is often digital-only.
+    
+    # 0.4 is a healthy cross-device threshold for consistent 1024 grids.
+    visual_match = (orb_res["confidence"] > 0.4)
+    
+    if forgery_detected:
+        v_state = "forged"
+        print(f"[Forensic] Overriding to FORGED: {forgery_reason}")
+    elif visual_match:
+        # High-trust verification requires BOTH visual parity and semantic harmony
+        if semantic_passed:
+            if is_ambiguous:
+                v_state = "pending_manual_confirmation"
+                print(f"[Forensic] Visual Match but AI Certainty Low ({scanned_certainty}) - Escalating to Human")
+            else:
+                v_state = "verified"
+        else:
+            # If visual is high but semantic reconciliation failed (non-forgery error)
+            v_state = "pending_reference_confirmation"
+    elif orb_res["confidence"] > 0.15 or semantic_passed:
+        # Some visual similarity or OCR match -> manual fallout
         v_state = "pending_reference_confirmation"
-        confidence *= 0.8 
+    else:
+        v_state = "inconclusive"
+
+    confidence = float(orb_res["confidence"] * 0.5) + float(quality.score * 0.2) + (0.3 if crypto["signature_valid"] else 0.0)
+    if forgery_detected:
+        confidence = 0.05 # Near zero for explicit integrity violation
+        
+    if not liveness["is_liveness_passing"]:
+        # Spoofing detected: override to inconclusive
+        v_state = "inconclusive"
+        confidence *= 0.1
 
     user_stmt = select(User).where(User.id == anchor.user_id)
     user_res = await db.execute(user_stmt)
@@ -439,6 +511,9 @@ async def verify_document(
         "liveness_passed": liveness["is_liveness_passing"],
         "crypto_passed": crypto["signature_valid"],
         "semantic_passed": semantic_passed,
+        "forgery_detected": forgery_detected,
+        "forgery_reason": forgery_reason if forgery_detected else None,
+        "orb_confidence": orb_res["confidence"],
         "rectification_confidence": rect_result.confidence,
         "metadata": {
             "anchor_id": str(anchor.id),

@@ -35,6 +35,7 @@ export const Endpoints = {
   ANCHORS: {
     SIGN: '/anchors/sign',
     LIST: '/anchors/',
+    VERIFY_AMOUNT: '/anchors/verify-amount',
   },
   SIGNATURES: {
     VERIFY_DOCUMENT: '/signatures/verify-document',

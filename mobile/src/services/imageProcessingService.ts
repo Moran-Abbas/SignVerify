@@ -32,6 +32,27 @@ export class ImageProcessingService {
   }
 
   /**
+   * Crops an image based on provided rectangle.
+   */
+  async cropImage(
+    uri: string,
+    crop: { originX: number; originY: number; width: number; height: number }
+  ): Promise<string> {
+    try {
+      console.log(`[ImageProcessingService] Cropping: ${JSON.stringify(crop)}`);
+      const result = await ImageManipulator.manipulateAsync(
+        uri,
+        [{ crop }],
+        { compress: 0.9, format: ImageManipulator.SaveFormat.JPEG }
+      );
+      return result.uri;
+    } catch (error) {
+      console.error("[ImageProcessingService] Crop failed:", error);
+      throw error;
+    }
+  }
+
+  /**
    * Generates a 6-digit Alphanumeric Reference ID (Shortcode).
    * 2026 Spec: Always uses Western digits (0-9).
    */

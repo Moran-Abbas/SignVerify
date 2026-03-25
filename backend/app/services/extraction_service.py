@@ -37,11 +37,13 @@ class ExtractionService:
         2. currency: ISO 4217 code (USD, ILS, EUR, etc.). If not visible, guess based on context/entities.
         3. date: Primary date in YYYY-MM-DD format. IMPORTANT: If no date is found or unclear, use {current_date}. NEVER use 1970-01-01.
         4. parties: Array of names/entities (Signers, Recipients, Issuers).
+        5. confidence: A float from 0.0 to 1.0 representing your certainty that the numbers (amount/date) were read correctly.
         
         Rules:
         - If a field is not explicitly visible but can be logically inferred, include it.
         - Return ONLY valid JSON. 
         - DO NOT guess 23.0 for the amount unless it's clearly on the paper.
+        - If text is blurry or handwriting is ambiguous, lower the confidence score.
         """
         
         try:
@@ -83,7 +85,8 @@ class ExtractionService:
             "amount": float,
             "currency": "ISO code",
             "date": "YYYY-MM-DD",
-            "parties": []
+            "parties": [],
+            "confidence": float
         }}
         """
         
@@ -119,15 +122,17 @@ class ExtractionService:
                 data["date"] = current_date
             
             # Ensure required keys exist and are not null
-            for key in ["amount", "currency", "date", "parties"]:
+            for key in ["amount", "currency", "date", "parties", "confidence"]:
                 if data.get(key) is None:
                     data[key] = fallback[key]
             
-            # Ensure amount is a float
+            # Ensure amount and confidence are floats
             try:
                 data["amount"] = float(data["amount"])
+                data["confidence"] = float(data.get("confidence", 0.0))
             except:
                 data["amount"] = fallback["amount"]
+                data["confidence"] = 0.0
                 
             return data
         except Exception as e:
@@ -170,12 +175,59 @@ class ExtractionService:
             # 2026 Re-hardening: return False on error to trigger manual reference check
             return False 
             
+    def reconcile_semantic(self, signed: dict, scanned: dict) -> dict:
+        """
+        Forensic Reconciliation: Compares the 'Truth' of the signed document
+        against the newly 'read' truth of the scanned frame.
+        
+        This prevents the '$54.50 -> $5.45' forgery reported in 2026.
+        """
+        is_amount_match = False
+        is_date_match = False
+        
+        # 1. Amount Check (with 1.0% tolerance for OCR jitter)
+        s_amt = float(signed.get("amount", 0.0))
+        n_amt = float(scanned.get("amount", 0.0))
+        
+        if s_amt > 0 and n_amt > 0:
+            diff = abs(s_amt - n_amt)
+            # Threshold: 1% variation is acceptable for jitter, 
+            # but $54.50 vs $5.45 is a 90% variation.
+            is_amount_match = diff <= (s_amt * 0.01)
+        elif s_amt == 0 and n_amt == 0:
+            is_amount_match = True
+            
+        # 2. Date Check
+        s_date = str(signed.get("date", "")).strip()
+        n_date = str(scanned.get("date", "")).strip()
+        is_date_match = (s_date == n_date)
+        
+        # Determine status
+        # Critical Fix: If the signed document has a value, it MUST match the scan.
+        if s_amt > 0 and not is_amount_match:
+            print(f"[Forensic] FORGERY DETECTED: Amount mismatch (Signed: {s_amt}, Scanned: {n_amt})")
+            return {
+                "status": "forged", 
+                "reason": f"AMOUNT_MISMATCH: Signed value {s_amt} does not match current scan {n_amt}."
+            }
+        
+        # For now, we Log but don't hard-reject on Date mismatch (too much OCR noise)
+        if s_date and not is_date_match:
+            print(f"[Forensic] Date Mismatch Warning: Signed: {s_date}, Scanned: {n_date}")
+        
+        return {
+            "status": "passed", 
+            "is_amount_match": is_amount_match, 
+            "is_date_match": is_date_match
+        }
+
     def _get_fallback_data(self) -> dict:
         return {
             "amount": 0.0,
             "currency": "UNKNOWN",
             "date": datetime.now().strftime("%Y-%m-%d"),
-            "parties": []
+            "parties": [],
+            "confidence": 0.0
         }
 
 extraction_service = ExtractionService()

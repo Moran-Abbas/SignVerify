@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   View,
   Text,
@@ -322,32 +322,31 @@ export default function DashboardScreen() {
   const [loading, setLoading] = useState(false);
   const [, setTick] = useState(0); // For force re-render on global state change
 
+  // Use a ref so the effect always calls the latest version without re-registering
+  const fetchingRef = useRef(false);
+
   const fetchAnchors = useCallback(async () => {
-    // Avoid redundant loads during active refresh
-    if (loading) return;
+    if (fetchingRef.current) return;
+    fetchingRef.current = true;
     setLoading(true);
-    
     try {
       const data = await anchorService.getUserAnchors();
       setAnchors(data);
-      // Snappy Reload: One medium pulse only on COMPLETE success
       safeHaptics.impact(ImpactFeedbackStyle.Medium);
     } catch (err) {
       console.error('[Dashboard] Error fetching anchors:', err);
+      // Silently swallow — empty state already shown, pull-to-refresh available
     } finally {
-      // Ensure it "sticks" for a split second for visual confirmation
-      setTimeout(() => setLoading(false), 300);
+      setTimeout(() => {
+        setLoading(false);
+        fetchingRef.current = false;
+      }, 300);
     }
-  }, [loading]);
+  }, []); // stable — no stale-closure risk
 
   useEffect(() => {
-    let active = true;
-    if (isFocused && active) {
-      fetchAnchors();
-      // Selection haptic silenced to reduce noise
-    }
-    return () => { active = false; };
-  }, [isFocused]);
+    if (isFocused) fetchAnchors();
+  }, [isFocused, fetchAnchors]);
 
   const renderContent = () => {
     switch (activeTab) {

@@ -38,6 +38,7 @@ type Props = NativeStackScreenProps<any, 'VerificationResults'>;
 export default function VerificationResultsScreen({ route, navigation }: Props) {
   const {
     isValid = true,
+    forgeryReason,
     timestamp,
     signerName,
     signerPhone,
@@ -230,7 +231,9 @@ export default function VerificationResultsScreen({ route, navigation }: Props) 
               Altered or Forged{'\n'}Document
             </Text>
             <Text style={styles.resultSubtitle}>
-              The physical text does not match the cryptographic signature.
+              {forgeryReason 
+                ? "This document appears to have been altered after it was signed."
+                : "The physical document does not match the cryptographic signature."}
             </Text>
 
             {/* Integrity mismatch card */}
@@ -242,9 +245,7 @@ export default function VerificationResultsScreen({ route, navigation }: Props) 
                 </Text>
               </View>
               <Text style={styles.hashCardDescription}>
-                Our verification engine detected unauthorized changes to the
-                document's content after it was signed. This document should be
-                considered invalid and potentially fraudulent.
+                {forgeryReason || "Our verification engine detected unauthorized changes to the document's content after it was signed. This document should be considered invalid and potentially fraudulent."}
               </Text>
             </View>
 
@@ -288,11 +289,13 @@ export default function VerificationResultsScreen({ route, navigation }: Props) 
             <View style={styles.detailChips}>
               <View style={styles.detailChip}>
                 <MaterialIcons name="warning" size={14} color={Colors.error} />
-                <Text style={styles.detailChipText}>Hash Mismatch</Text>
+                <Text style={styles.detailChipText}>
+                  {forgeryReason?.includes('AMOUNT') ? 'Amount Mismatch' : 'Content Tampered'}
+                </Text>
               </View>
               <View style={styles.detailChip}>
-                <MaterialIcons name="cancel" size={14} color={Colors.error} />
-                <Text style={styles.detailChipText}>Expired Certificate</Text>
+                <MaterialIcons name="security" size={14} color={Colors.error} />
+                <Text style={styles.detailChipText}>Forensic Rejection</Text>
               </View>
             </View>
           </View>

@@ -35,3 +35,7 @@ class AnchorResponse(BaseModel):
     created_at: datetime
     reference_id: Optional[str] = None
     payload: AnchorPayload
+
+class AmountVerifyRequest(BaseModel):
+    anchor_id: str
+    amount: float

@@ -19,12 +19,13 @@ from app.models.anchor import DocumentAnchor, ForensicLog
 from app.database import get_db
 from app.models.user import User
 from app.models.public_key import PublicKey
-from app.schemas.anchor import AnchorCreateRequest, AnchorResponse, AnchorPayload, SemanticContent
+from app.schemas.anchor import AnchorCreateRequest, AnchorResponse, AnchorPayload, SemanticContent, AmountVerifyRequest
 from app.middleware.auth_middleware import get_current_user
 from app.services.crypto_service import crypto_service
 from app.services.s3_service import s3_service
 from app.services.extraction_service import extraction_service
 from app.services.image_quality_service import image_quality_service
+from app.services.document_rectification_service import rectification_service
 from app.utils.normalizer import normalize_semantic_text
 from app.utils.visual_hash import dhash_hex_from_base64_data_uri_or_raw, hamming_hex64
 import cv2
@@ -157,13 +158,18 @@ async def sign_document(
     # Authoritative Quality Gate (T1 Foundation)
     quality_result = image_quality_service.validate(image_bytes)
     if not quality_result.passed:
+        # Flatten flags for mobile display
+        failed_reasons = []
+        f = quality_result.details.get("flags", {})
+        if f.get("is_blurry"): failed_reasons.append("too blurry")
+        if f.get("is_too_dark"): failed_reasons.append("too dark")
+        if f.get("is_too_bright"): failed_reasons.append("too bright")
+        if f.get("is_low_res"): failed_reasons.append("low resolution")
+        
+        reason_str = ", ".join(failed_reasons) if failed_reasons else "poor image quality"
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail={
-                "error": "IMAGE_QUALITY_BELOW_THRESHOLD",
-                "score": quality_result.score,
-                "details": quality_result.details
-            }
+            detail=f"IMAGE_QUALITY_REJECTED: The photo is {reason_str}. Please steady your device and ensure good lighting."
         )
 
     server_vh = dhash_hex_from_base64_data_uri_or_raw(anchor_req.image_base64)
@@ -235,22 +241,54 @@ async def sign_document(
     # Hash the image for S3 and record reference
     image_hash = hashlib.sha256(anchor_req.image_base64.encode()).hexdigest()
 
-    # 2026 Spec: Compute ORB Descriptors for high-fidelity visual matching
+    # 2026 Spec: Compute ORB Descriptors on a CANONICAL RECTIFIED FRAME
+    # This ensures coordinate synchronization with the Verifier's rectified crops.
+    # 2026 Policy Alignment: Manual crops are already "Precision-Aligned" by the client.
+    # Running 'rectify' (perspective warping) on an already-cropped square frame 
+    # is unpredictable and causes ORB mismatch in the Verifier loop.
     orb_data = None
     try:
-        # Decode base64 to image
-        nparr = np.frombuffer(base64.b64decode(anchor_req.image_base64), np.uint8)
-        img = cv2.imdecode(nparr, cv2.IMREAD_GRAYSCALE)
+        nparr = np.frombuffer(image_bytes, np.uint8)
+        raw_img = cv2.imdecode(nparr, cv2.IMREAD_GRAYSCALE)
+        img_rect = None
         
-        if img is not None:
+        if raw_img is not None:
+            h, w = raw_img.shape[:2]
+            # Detect 1024x1024 precision crop
+            if h == w == 1024:
+                img_rect = raw_img
+                print("[Anchors] Detected precision crop - skipping rectification for 1:1 parity.")
+            else:
+                rect_res = await rectification_service.rectify(image_bytes)
+                if rect_res.passed:
+                    rect_nparr = np.frombuffer(base64.b64decode(rect_res.rectified_image), np.uint8)
+                    img_rect = cv2.imdecode(rect_nparr, cv2.IMREAD_GRAYSCALE)
+                else:
+                    print(f"[Anchors] Rectification failed: {rect_res.details}. Using raw resize.")
+                    img_rect = cv2.resize(raw_img, (1024, 1024))
+        
+        if img_rect is not None:
             orb = cv2.ORB_create(nfeatures=1000)
-            keypoints, descriptors = orb.detectAndCompute(img, None)
+            keypoints, descriptors = orb.detectAndCompute(img_rect, None)
             if descriptors is not None:
-                # Serialize keypoints and descriptors for JSONB storage
+                # Forensic Safeguard: If we don't see enough features, it's NOT a document
+                if len(keypoints) < 15:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="DOCUMENT_NOT_DETECTED: No valid document features found in the frame. Please align the document properly."
+                    )
                 orb_data = {
                     "keypoints": [[float(kp.pt[0]), float(kp.pt[1])] for kp in keypoints],
                     "descriptors": descriptors.tolist()
                 }
+            else:
+                # No descriptors at all (e.g. solid color wall)
+                raise HTTPException(
+                    status_code=400, 
+                    detail="DOCUMENT_NOT_DETECTED: The image contains no recognizable document patterns."
+                )
+    except HTTPException:
+        raise
     except Exception as e:
         print(f"[Anchors] ORB Computation Failed: {str(e)}")
         # Non-fatal: fall back to phash matching if ORB fails
@@ -331,3 +369,50 @@ async def list_anchors(
             )
         ) for a in anchors
     ]
+
+@router.post("/verify-amount")
+async def verify_amount(
+    req: AmountVerifyRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Forensic Reconciliation Fallback: Manually verifies high-severity amounts 
+    when AI confidence is < 95%.
+    """
+    stmt = select(DocumentAnchor).where(DocumentAnchor.id == req.anchor_id)
+    res = await db.execute(stmt)
+    anchor = res.scalar_one_or_none()
+    
+    if not anchor:
+        raise HTTPException(status_code=404, detail="ANCHOR_NOT_FOUND")
+        
+    signed_amt = float(anchor.normalized_content.get("amount", 0.0))
+    user_amt = float(req.amount)
+    
+    # Strict matching (No tolerance for manual human entry)
+    if abs(signed_amt - user_amt) < 0.001:
+        # Success - Return the metadata for the Results screen
+        user_stmt = select(User).where(User.id == anchor.user_id)
+        user_res = await db.execute(user_stmt)
+        user = user_res.scalar_one_or_none()
+        
+        return {
+            "match": True,
+            "verification_state": "verified",
+            "metadata": {
+                "anchor_id": str(anchor.id),
+                "signer_name": user.phone_number if user else "Unknown",
+                "reference_id": anchor.reference_id,
+                "timestamp": anchor.created_at.isoformat() if anchor.created_at else None,
+                "parties": anchor.normalized_content.get("parties", []) if anchor.normalized_content else []
+            }
+        }
+    else:
+        # Forgery or Human Error
+        print(f"[Forensic] Manual Rejection: Scanned {user_amt} != Signed {signed_amt}")
+        return {
+            "match": False,
+            "verification_state": "forged",
+            "detail": f"INTEGRITY_VIOLATION: Manual input {user_amt} does not match signed ledger value."
+        }
