@@ -36,4 +36,10 @@ export const Endpoints = {
     SIGN: '/anchors/sign',
     LIST: '/anchors/',
   },
+  SIGNATURES: {
+    VERIFY_DOCUMENT: '/signatures/verify-document',
+    CONFIRM_REFERENCE: '/signatures/confirm-reference',
+    SEARCH: '/signatures/search',
+    REFERENCE: (refId: string) => `/signatures/reference/${refId}`,
+  },
 };

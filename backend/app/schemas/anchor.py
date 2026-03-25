@@ -22,7 +22,7 @@ class AnchorCreateRequest(BaseModel):
 class AnchorPayload(BaseModel):
     document_hash: str
     digital_signature: str
-    signer_public_key_id: str
+    signer_public_key_id: Optional[str] = None
     binding_vhash: Optional[str] = None
     semantic_content: Optional[SemanticContent] = None
     image_quality_score: Optional[float] = None

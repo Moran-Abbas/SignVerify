@@ -37,19 +37,17 @@ export const ARProjectionOverlay: React.FC<ARProjectionOverlayProps> = ({
 }) => {
   // 1. Map corners to screen space
   const screenCorners = useMemo(() => {
-    // scaleX/Y maps from normalized 1024x1024 crop to the viewfinder's screen size
-    const scaleX = frameWidth / 1024;
-    const scaleY = frameHeight / 1024;
+    // In T5, we use full-frame verification. 
+    // The 'frameWidth' and 'frameHeight' now represent the dimensions of the 
+    // canonical analyze-frame (e.g. 1024 pixels width).
+    const scaleX = screenWidth / frameWidth;
+    const scaleY = screenHeight / frameHeight;
     
-    // Viewfinder is centered in ScannerOverlay
-    const viewfinderLeft = (screenWidth - frameWidth) / 2;
-    const viewfinderTop = (screenHeight - frameHeight) / 2;
-
     return corners.map(p => ({
-      x: p.x * scaleX + viewfinderLeft,
-      y: p.y * scaleY + viewfinderTop,
+      x: p.x * scaleX,
+      y: p.y * scaleY,
     }));
-  }, [corners, frameWidth, frameHeight]);
+  }, [corners, frameWidth, frameHeight, screenWidth, screenHeight]);
 
   // 3. Convert corners to SVG polygon string
   const pointsString = useMemo(() => {

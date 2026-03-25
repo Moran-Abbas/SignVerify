@@ -78,14 +78,14 @@ const ScannerOverlay = memo(function ScannerOverlay({
   return (
     <View style={styles.container}>
       {/* ── Status Message Instruction ────────────────────── */}
-      {statusMsg && (
+      {!!statusMsg && (
         <View style={styles.instructionContainer}>
           <Text style={styles.instructionText}>{statusMsg}</Text>
         </View>
       )}
 
       {/* Step progress bar */}
-      {stepLabel && stepNumber != null && totalSteps != null && (
+      {!!(stepLabel && stepNumber != null && totalSteps != null) && (
         <View style={styles.stepsContainer}>
           {Array.from({ length: totalSteps }, (_, i) => (
             <View
@@ -123,7 +123,7 @@ const ScannerOverlay = memo(function ScannerOverlay({
           <MaterialIcons name="open-in-full" size={20} color={Colors.secondary} />
         </View>
 
-        {scanning && (
+        {!!scanning && (
           <Text style={styles.scanningText}>Analyzing...</Text>
         )}
       </View>

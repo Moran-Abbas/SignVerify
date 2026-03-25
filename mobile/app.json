@@ -44,22 +44,20 @@
       "package": "com.moranabbas.signverify"
     },
     "plugins": [
+      "./withFirebaseStabilization",
       "expo-font",
       "expo-secure-store",
       "@react-native-firebase/app",
       "@react-native-firebase/auth",
-      [
-        "react-native-vision-camera",
-        {
-          "cameraPermissionText": "Allow SignVerify to access your camera to scan physical documents for cryptographic signature binding."
-        }
-      ],
+      "react-native-document-scanner-plugin",
+      "react-native-vision-camera",
       [
         "expo-build-properties",
         {
           "ios": {
             "useFrameworks": "static",
-            "deploymentTarget": "15.1"
+            "deploymentTarget": "15.1",
+            "buildReactNativeFromSource": true
           }
         }
       ]

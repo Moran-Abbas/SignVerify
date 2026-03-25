@@ -167,7 +167,8 @@ class ExtractionService:
             return "YES" in answer
         except Exception as e:
             print(f"[ExtractionService] ID Verification error: {str(e)}")
-            return True # Fail-open for UX, but log error
+            # 2026 Re-hardening: return False on error to trigger manual reference check
+            return False 
             
     def _get_fallback_data(self) -> dict:
         return {
